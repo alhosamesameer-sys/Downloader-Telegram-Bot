@@ -89,7 +89,7 @@ async def main():
         if not url or not platform(url):return await m.answer("الاستخدام: /audio رابط_فيديو_عام")
         src=dst=None
         try:
-            _,_=await m.answer("⏳ جاري تنزيل الفيديو وتحويله...")
+            await m.answer("⏳ جاري تنزيل الفيديو وتحويله...")
             src,title=await grab(url);dst=await convert(src);await m.answer_audio(FSInputFile(dst),caption=title)
             async with Session() as db:u=await user(db,m.from_user);u.conversions+=1;await db.commit()
         except Exception as e:await m.answer("❌ فشل التحويل: "+str(e)[:400])
