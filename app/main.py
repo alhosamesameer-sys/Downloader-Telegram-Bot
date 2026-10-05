@@ -5,6 +5,7 @@ from aiogram import Bot,Dispatcher,F
 from aiogram.filters import Command
 from aiogram.types import Message,CallbackQuery,InlineKeyboardMarkup,InlineKeyboardButton,FSInputFile
 from pydantic_settings import BaseSettings,SettingsConfigDict
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker,AsyncSession
 from sqlalchemy.orm import DeclarativeBase,Mapped,mapped_column
 from sqlalchemy import BigInteger,Integer,String,Boolean,DateTime,func,select
@@ -13,7 +14,7 @@ import yt_dlp
 class Settings(BaseSettings):
     model_config=SettingsConfigDict(env_file=".env",extra="ignore")
     bot_token:str="";database_url:str="postgresql+asyncpg://postgres:postgres@localhost:5432/social_downloader";redis_url:str="redis://localhost:6379/0"
-    admin_ids:str="";youtube_api_key:str="";temp_dir:str="./temp";max_file_size:int=52428800;download_timeout:int=120;rate_limit:int=10
+    admin_ids:str="";youtube_api_key:str="";temp_dir:str="./temp";max_file_size:int=52428800;download_timeout:int=120;rate_limit:int=10;temp_cleanup_hours:int=6
     @property
     def admins(self):return {int(x) for x in self.admin_ids.split(",") if x.strip().isdigit()}
 S=Settings()
@@ -53,6 +54,12 @@ async def yt_search(q):
         with urllib.request.urlopen("https://www.googleapis.com/youtube/v3/search?"+params,timeout=15) as r:return json.loads(r.read())
     data=await asyncio.to_thread(run)
     return [(x["snippet"]["title"],"https://youtube.com/watch?v="+x["id"]["videoId"]) for x in data.get("items",[])]
+
+async def enqueue(task:dict)->None:
+    redis=Redis.from_url(S.redis_url,decode_responses=True)
+    try: await redis.rpush("downloads",json.dumps(task,ensure_ascii=False))
+    finally: await redis.aclose()
+
 def kb():return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 تحميل",callback_data="download"),InlineKeyboardButton(text="👤 حسابي",callback_data="stats")],[InlineKeyboardButton(text="🎵 فيديو→صوت",callback_data="audio"),InlineKeyboardButton(text="ℹ️ المساعدة",callback_data="help")]])
 async def main():
     if not S.bot_token:raise RuntimeError("BOT_TOKEN غير مضبوط")
@@ -89,15 +96,50 @@ async def main():
         if not url or not platform(url):return await m.answer("الاستخدام: /audio رابط_فيديو_عام")
         src=dst=None
         try:
-            await m.answer("⏳ جاري تنزيل الفيديو وتحويله...")
-            src,title=await grab(url);dst=await convert(src);await m.answer_audio(FSInputFile(dst),caption=title)
-            async with Session() as db:u=await user(db,m.from_user);u.conversions+=1;await db.commit()
+            await enqueue({"type":"audio","url":url,"chat_id":m.chat.id,"user_id":m.from_user.id})
+            await m.answer("🟡 تمت إضافة التحويل إلى قائمة الانتظار.")
         except Exception as e:await m.answer("❌ فشل التحويل: "+str(e)[:400])
         finally:
             for p in (src,dst):
                 if p and os.path.exists(p):
                     try:os.remove(p)
                     except OSError:pass
+    @dp.message(Command("hashtag"))
+    async def hashtag(m):
+        raw=(m.text or "").partition(" ")[2].strip().lstrip("#").split()[0] if (m.text or "").partition(" ")[2].strip() else ""
+        if not raw or len(raw)>80 or not raw.replace("_","").isalnum(): return await m.answer("الاستخدام: /hashtag اسم_الهاشتاغ")
+        try:
+            rows=await yt_search("#"+raw)
+            async with Session() as db: x=await user(db,m.from_user);x.searches+=1;await db.commit()
+            await m.answer("\n\n".join(f"• {t}\n{u}" for t,u in rows) or "لا توجد نتائج.")
+        except Exception as e: await m.answer("⚠️ "+str(e)[:300])
+
+    @dp.message(Command("users"))
+    async def users(m):
+        if m.from_user.id not in S.admins:return
+        async with Session() as db:
+            total=await db.scalar(select(func.count(User.id))) or 0
+            blocked=await db.scalar(select(func.count(User.id)).where(User.blocked==True)) or 0
+            downloads=await db.scalar(select(func.sum(User.downloads))) or 0
+        await m.answer(f"📊 المستخدمون: {total}\n🚫 المحظورون: {blocked}\n📥 التنزيلات: {downloads}")
+
+    @dp.message(Command("user"))
+    async def user_info(m):
+        if m.from_user.id not in S.admins:return
+        p=(m.text or "").split()
+        if len(p)!=2 or not p[1].isdigit():return await m.answer("/user ID")
+        async with Session() as db:x=await db.scalar(select(User).where(User.telegram_id==int(p[1])))
+        if not x:return await m.answer("المستخدم غير موجود.")
+        await m.answer(f"👤 {x.first_name or '-'}\nID: {x.telegram_id}\n@{x.username or '-'}\n📥 {x.downloads} | 🔎 {x.searches} | 🎵 {x.conversions}\n🚫 {'نعم' if x.blocked else 'لا'}")
+
+    @dp.message(Command("message"))
+    async def private_message(m):
+        if m.from_user.id not in S.admins:return
+        p=(m.text or "").split(maxsplit=2)
+        if len(p)<3 or not p[1].isdigit():return await m.answer("/message ID النص")
+        try: await bot.send_message(int(p[1]),p[2]);await m.answer("✅ تم إرسال الرسالة.")
+        except Exception as e: await m.answer("❌ "+str(e)[:300])
+
     @dp.message(Command("admin"))
     async def admin(m):
         if m.from_user.id in S.admins:await m.answer("🛠 الإدارة\n/block ID\n/unblock ID\n/broadcast نص")
@@ -143,17 +185,7 @@ async def main():
         async with Session() as db:
             x=await user(db,m.from_user)
             if x.blocked:return
-        await m.answer(f"🔎 {name}\n⏳ جارٍ التحميل...")
-        path=None
-        try:
-            path,title=await grab(u)
-            if os.path.getsize(path)>S.max_file_size:raise RuntimeError("حجم الملف أكبر من الحد المسموح")
-            await m.answer_document(FSInputFile(path),caption=f"✅ {title}")
-            async with Session() as db:x=await user(db,m.from_user);x.downloads+=1;await db.commit()
-        except Exception as e:logging.exception("download");await m.answer("❌ تعذر التحميل: "+str(e)[:400])
-        finally:
-            if path and os.path.exists(path):
-                try:os.remove(path)
-                except OSError:pass
+        await enqueue({"type":"download","url":u,"chat_id":m.chat.id,"user_id":m.from_user.id})
+        await m.answer(f"🟡 {name}\nتمت إضافة الرابط إلى قائمة الانتظار.")
     await dp.start_polling(bot)
 if __name__=="__main__":asyncio.run(main())
