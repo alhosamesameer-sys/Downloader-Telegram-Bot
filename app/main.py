@@ -176,16 +176,23 @@ async def main():
     @dp.message(Command("start"))
     async def start(m):
         pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
-        async with Session() as db:
-            u=await user(db,m.from_user)
-            if u.blocked:return await m.answer("🚫 حسابك محظور من استخدام البوت.")
+        try:
+            async with Session() as db:
+                u=await user(db,m.from_user)
+                if u.blocked:return await m.answer("🚫 حسابك محظور من استخدام البوت.")
+        except Exception as e:
+            log.exception("start database operation failed: %s",e)
         await m.answer(WELCOME,reply_markup=user_kb(m.from_user.id in S.admins))
     @dp.message(Command("stats"))
     async def stats(m):
         pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if not await allowed(m):return
-        async with Session() as db:u=await user(db,m.from_user)
-        await m.answer(f"👤 حسابي\n\n🆔 {u.telegram_id}\n📥 التنزيلات: {u.downloads}\n🔎 عمليات البحث: {u.searches}\n🎵 التحويلات: {u.conversions}",reply_markup=user_kb(m.from_user.id in S.admins))
+        try:
+            async with Session() as db:u=await user(db,m.from_user)
+            await m.answer(f"👤 حسابي\n\n🆔 {u.telegram_id}\n📥 التنزيلات: {u.downloads}\n🔎 عمليات البحث: {u.searches}\n🎵 التحويلات: {u.conversions}",reply_markup=user_kb(m.from_user.id in S.admins))
+        except Exception as e:
+            log.exception("stats database operation failed: %s",e)
+            await m.answer("⚠️ قاعدة البيانات غير متاحة مؤقتًا. حاول بعد قليل.",reply_markup=user_kb(m.from_user.id in S.admins))
     @dp.message(Command("yt"))
     async def yt(m):
         pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
