@@ -1,5 +1,7 @@
 import asyncio,logging,os,time,json,urllib.parse,urllib.request
 from uuid import uuid4
+
+log=logging.getLogger(__name__)
 from pathlib import Path
 from urllib.parse import urlparse
 from aiogram import Bot,Dispatcher,F
@@ -346,7 +348,7 @@ async def main():
     async def media_delete_cb(c):
         await c.answer()
         try: await c.message.delete()
-        except Exception: pass
+        except Exception as e: log.debug("message deletion failed: %s",e)
 
     @dp.callback_query(F.data=="admin_panel")
     async def admin_panel_cb(c):
