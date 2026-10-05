@@ -1,4 +1,5 @@
 import asyncio,logging,os,time,json,urllib.parse,urllib.request
+from uuid import uuid4
 from pathlib import Path
 from urllib.parse import urlparse
 from aiogram import Bot,Dispatcher,F
@@ -89,6 +90,34 @@ async def enqueue(task:dict)->None:
     try: await redis.rpush("downloads",json.dumps(task,ensure_ascii=False))
     finally: await redis.aclose()
 
+async def store_media_url(url:str)->str:
+    token=uuid4().hex[:16]
+    redis=Redis.from_url(S.redis_url,decode_responses=True)
+    try: await redis.setex(f"media:{token}",3600,url)
+    finally: await redis.aclose()
+    return token
+
+async def get_media_url(token:str)->str|None:
+    if not token or len(token)>32 or not token.isalnum(): return None
+    redis=Redis.from_url(S.redis_url,decode_responses=True)
+    try: return await redis.get(f"media:{token}")
+    finally: await redis.aclose()
+
+def media_kb(token:str,url:str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎵 تحويل إلى MP3",callback_data=f"media_audio:{token}")],
+        [InlineKeyboardButton(text="🔄 تحميل مرة أخرى",callback_data=f"media_redownload:{token}"),
+         InlineKeyboardButton(text="🔗 فتح الرابط",url=url)],
+        [InlineKeyboardButton(text="🗑️ حذف الرسالة",callback_data=f"media_delete:{token}")],
+    ])
+
+async def search_kb(rows):
+    buttons=[]
+    for title,url in rows:
+        token=await store_media_url(url)
+        buttons.append([InlineKeyboardButton(text=f"📥 {title[:45]}",callback_data=f"media_redownload:{token}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
 def user_kb(is_admin=False):
     rows=[
         [InlineKeyboardButton(text="📥 تحميل فيديو",callback_data="download"),InlineKeyboardButton(text="🎵 تحويل إلى صوت",callback_data="audio")],
@@ -109,6 +138,11 @@ def admin_kb():
 def back_admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="↩️ العودة للوحة الإدارة",callback_data="admin_panel")]])
 
+def back_user_kb(is_admin=False):
+    rows=[[InlineKeyboardButton(text="🏠 القائمة الرئيسية",callback_data="user_panel")]]
+    if is_admin: rows.append([InlineKeyboardButton(text="🛠️ لوحة الإدارة",callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 WELCOME="""👋 أهلاً بك في SamirNet
 
 بوت تحميل ومعالجة الوسائط من الروابط العامة بسهولة.
@@ -128,7 +162,7 @@ YouTube • TikTok • Instagram • Facebook • X • Snapchat • Likee
 ⚠️ لا يدعم البوت المحتوى الخاص أو تجاوز تسجيل الدخول أو DRM."""
 async def main():
     if not S.bot_token:raise RuntimeError("BOT_TOKEN غير مضبوط")
-    bot=Bot(S.bot_token);dp=Dispatcher();hits={};pending_admin={}
+    bot=Bot(S.bot_token);dp=Dispatcher();hits={};pending_admin={};pending_user={}
     async def allowed(m):
         if not m.from_user:return False
         now=time.monotonic();q=hits.setdefault(m.from_user.id,[]);q[:]=[x for x in q if now-x<60]
@@ -139,7 +173,7 @@ async def main():
 
     @dp.message(Command("start"))
     async def start(m):
-        pending_admin.pop(m.from_user.id,None)
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         async with Session() as db:
             u=await user(db,m.from_user)
             if u.blocked:return await m.answer("🚫 حسابك محظور من استخدام البوت.")
@@ -246,16 +280,52 @@ async def main():
         await c.message.answer("ℹ️ المساعدة\n\n📥 أرسل رابط فيديو عام لتحميله.\n🎵 استخدم تحويل إلى صوت لإخراج MP3.\n🔎 للبحث: /yt كلمة\n🏷️ للهاشتاغ: /hashtag اسم_الهاشتاغ\n\n⚠️ المحتوى الخاص وتجاوز تسجيل الدخول وDRM غير مدعوم.",reply_markup=user_kb(c.from_user.id in S.admins))
 
     @dp.callback_query(F.data=="audio")
-    async def audio_cb(c):await c.answer();await c.message.answer("🎵 أرسل الآن رابط فيديو عام لتحويله إلى MP3.")
+    async def audio_cb(c):
+        await c.answer()
+        pending_user[c.from_user.id]="audio"
+        await c.message.answer("🎵 أرسل الآن رابط الفيديو العام لتحويله إلى MP3.",reply_markup=back_user_kb(c.from_user.id in S.admins))
 
     @dp.callback_query(F.data=="download")
-    async def download_cb(c):await c.answer();await c.message.answer("📥 أرسل الآن رابط الفيديو العام مباشرة، وسأضيفه إلى قائمة الانتظار.")
+    async def download_cb(c):
+        await c.answer()
+        pending_user[c.from_user.id]="download"
+        await c.message.answer("📥 أرسل الآن رابط الفيديو العام.",reply_markup=back_user_kb(c.from_user.id in S.admins))
 
     @dp.callback_query(F.data=="search")
-    async def search_cb(c):await c.answer();await c.message.answer("🔎 أرسل أمر البحث بهذا الشكل:\n/yt اسم الفيديو")
+    async def search_cb(c):
+        await c.answer()
+        pending_user[c.from_user.id]="search"
+        await c.message.answer("🔎 أرسل الآن كلمة البحث عن فيديو في YouTube.",reply_markup=back_user_kb(c.from_user.id in S.admins))
 
     @dp.callback_query(F.data=="hashtag")
-    async def hashtag_cb(c):await c.answer();await c.message.answer("🏷️ أرسل الهاشتاغ بهذا الشكل:\n/hashtag اسم_الهاشتاغ")
+    async def hashtag_cb(c):
+        await c.answer()
+        pending_user[c.from_user.id]="hashtag"
+        await c.message.answer("🏷️ أرسل اسم الهاشتاغ بدون #.",reply_markup=back_user_kb(c.from_user.id in S.admins))
+
+    @dp.callback_query(F.data.startswith("media_audio:"))
+    async def media_audio_cb(c):
+        await c.answer("جاري إضافة التحويل...")
+        token=c.data.split(":",1)[1]
+        url=await get_media_url(token)
+        if not url:return await c.message.answer("⚠️ انتهت صلاحية هذا الزر، أرسل الرابط من جديد.")
+        await enqueue({"type":"audio","url":url,"chat_id":c.message.chat.id,"user_id":c.from_user.id})
+        await c.message.answer("🟡 تمت إضافة تحويل MP3 إلى قائمة الانتظار.")
+
+    @dp.callback_query(F.data.startswith("media_redownload:"))
+    async def media_redownload_cb(c):
+        await c.answer("جاري إضافة التحميل...")
+        token=c.data.split(":",1)[1]
+        url=await get_media_url(token)
+        if not url:return await c.message.answer("⚠️ انتهت صلاحية هذا الزر، أرسل الرابط من جديد.")
+        await enqueue({"type":"download","url":url,"chat_id":c.message.chat.id,"user_id":c.from_user.id})
+        await c.message.answer("🟡 تمت إعادة إضافة الرابط إلى قائمة الانتظار.")
+
+    @dp.callback_query(F.data.startswith("media_delete:"))
+    async def media_delete_cb(c):
+        await c.answer()
+        try: await c.message.delete()
+        except Exception: pass
 
     @dp.callback_query(F.data=="admin_panel")
     async def admin_panel_cb(c):
@@ -300,6 +370,12 @@ async def main():
     @dp.callback_query(F.data=="admin_message")
     async def admin_message_cb(c):await admin_prompt(c,"message","💬 أرسل بهذا الشكل:\nID النص\nمثال: 123456789 مرحباً بك.")
 
+    @dp.callback_query(F.data=="user_cancel")
+    async def user_cancel_cb(c):
+        pending_user.pop(c.from_user.id,None)
+        await c.answer()
+        await c.message.answer("تم إلغاء العملية.",reply_markup=user_kb(c.from_user.id in S.admins))
+
     @dp.callback_query(F.data=="user_panel")
     async def user_panel_cb(c):
         pending_admin.pop(c.from_user.id,None)
@@ -320,6 +396,41 @@ async def main():
     @dp.message()
     async def media(m):
         if not m.from_user:return
+        user_action=pending_user.get(m.from_user.id)
+        if user_action:
+            text=(m.text or "").strip()
+            if user_action in {"download","audio"}:
+                pending_user.pop(m.from_user.id,None)
+                if not valid_url(text) or not platform(text):
+                    return await m.answer("⚠️ أرسل رابط فيديو عام صحيحًا من منصة مدعومة.",reply_markup=back_user_kb(m.from_user.id in S.admins))
+                async with Session() as db:
+                    x=await user(db,m.from_user)
+                    if x.blocked:return await m.answer("🚫 حسابك محظور من استخدام البوت.")
+                task_type="audio" if user_action=="audio" else "download"
+                await enqueue({"type":task_type,"url":text,"chat_id":m.chat.id,"user_id":m.from_user.id})
+                return await m.answer("🟡 تمت إضافة الطلب إلى قائمة الانتظار.\n⏳ سيصل الملف تلقائيًا عند اكتمال التحميل.")
+            if user_action=="search":
+                pending_user.pop(m.from_user.id,None)
+                if not text:return await m.answer("⚠️ أرسل كلمة بحث.",reply_markup=back_user_kb(m.from_user.id in S.admins))
+                try:
+                    rows=await yt_search(text)
+                    async with Session() as db:
+                        x=await user(db,m.from_user);x.searches+=1;await db.commit()
+                    kb=await search_kb(rows)
+                    return await m.answer(("🔎 نتائج البحث:\n\n"+"\n".join(f"• {t}" for t,_ in rows)) if rows else "لا توجد نتائج.",reply_markup=kb)
+                except Exception as e:return await m.answer("⚠️ "+str(e)[:400],reply_markup=back_user_kb(m.from_user.id in S.admins))
+            if user_action=="hashtag":
+                pending_user.pop(m.from_user.id,None)
+                raw=text.lstrip("#").split()[0] if text else ""
+                if not raw or len(raw)>80 or not raw.replace("_","").isalnum():
+                    return await m.answer("⚠️ أرسل هاشتاغ صحيحًا.",reply_markup=back_user_kb(m.from_user.id in S.admins))
+                try:
+                    rows=await yt_search("#"+raw)
+                    async with Session() as db:
+                        x=await user(db,m.from_user);x.searches+=1;await db.commit()
+                    kb=await search_kb(rows)
+                    return await m.answer(("🏷️ نتائج الهاشتاغ #"+raw+"\n\n"+"\n".join(f"• {t}" for t,_ in rows)) if rows else "لا توجد نتائج.",reply_markup=kb)
+                except Exception as e:return await m.answer("⚠️ "+str(e)[:400],reply_markup=back_user_kb(m.from_user.id in S.admins))
         action=pending_admin.get(m.from_user.id)
         if action and m.from_user.id in S.admins:
             text=(m.text or "").strip()
