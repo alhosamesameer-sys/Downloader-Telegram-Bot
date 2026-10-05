@@ -1,4 +1,4 @@
-import asyncio,logging,os,time,json
+import asyncio,logging,os,time,json,urllib.parse,urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 from aiogram import Bot,Dispatcher,F
@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker,AsyncS
 from sqlalchemy.orm import DeclarativeBase,Mapped,mapped_column
 from sqlalchemy import BigInteger,Integer,String,Boolean,DateTime,func,select
 import yt_dlp
-from redis.asyncio import Redis
 
 class Settings(BaseSettings):
     model_config=SettingsConfigDict(env_file=".env",extra="ignore")
@@ -41,18 +40,30 @@ async def grab(url):
         with yt_dlp.YoutubeDL({"quiet":True,"noplaylist":True,"outtmpl":f"{S.temp_dir}/%(id)s.%(ext)s","max_filesize":S.max_file_size}) as y:
             i=y.extract_info(url,download=True);return y.prepare_filename(i),str(i.get("title") or "وسائط")
     return await asyncio.wait_for(asyncio.to_thread(run),S.download_timeout)
+async def convert(src):
+    dst=str(Path(S.temp_dir)/(Path(src).stem+".mp3"))
+    p=await asyncio.create_subprocess_exec("ffmpeg","-y","-i",src,"-vn","-codec:a","libmp3lame","-q:a","2",dst,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE)
+    _,err=await p.communicate()
+    if p.returncode:raise RuntimeError(err.decode(errors="ignore")[-1000:])
+    return dst
+async def yt_search(q):
+    if not S.youtube_api_key:raise RuntimeError("ضع YOUTUBE_API_KEY لاستخدام بحث YouTube.")
+    params=urllib.parse.urlencode({"part":"snippet","q":q,"type":"video","maxResults":5,"key":S.youtube_api_key})
+    def run():
+        with urllib.request.urlopen("https://www.googleapis.com/youtube/v3/search?"+params,timeout=15) as r:return json.loads(r.read())
+    data=await asyncio.to_thread(run)
+    return [(x["snippet"]["title"],"https://youtube.com/watch?v="+x["id"]["videoId"]) for x in data.get("items",[])]
 def kb():return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 تحميل",callback_data="download"),InlineKeyboardButton(text="👤 حسابي",callback_data="stats")],[InlineKeyboardButton(text="🎵 فيديو→صوت",callback_data="audio"),InlineKeyboardButton(text="ℹ️ المساعدة",callback_data="help")]])
 async def main():
     if not S.bot_token:raise RuntimeError("BOT_TOKEN غير مضبوط")
     bot=Bot(S.bot_token);dp=Dispatcher();hits={}
     async def allowed(m):
         if not m.from_user:return False
-        now=time.monotonic();q=hits.setdefault(m.from_user.id,[])
-        q[:]=[x for x in q if now-x<60]
+        now=time.monotonic();q=hits.setdefault(m.from_user.id,[]);q[:]=[x for x in q if now-x<60]
         if len(q)>=S.rate_limit:return False
         q.append(now);return True
     @dp.message(Command("start"))
-    async def start(m): 
+    async def start(m):
         if not await allowed(m):return
         async with Session() as db:
             u=await user(db,m.from_user)
@@ -63,6 +74,30 @@ async def main():
         if not await allowed(m):return
         async with Session() as db:u=await user(db,m.from_user)
         await m.answer(f"👤 الحساب\n📥 {u.downloads}\n🔎 {u.searches}\n🎵 {u.conversions}")
+    @dp.message(Command("yt"))
+    async def yt(m):
+        q=(m.text or "").partition(" ")[2].strip()
+        if not q:return await m.answer("الاستخدام: /yt اسم الفيديو")
+        try:
+            rows=await yt_search(q)
+            async with Session() as db:u=await user(db,m.from_user);u.searches+=1;await db.commit()
+            await m.answer("\n".join(f"• {t}\n{u}" for t,u in rows) or "لا توجد نتائج.")
+        except Exception as e:await m.answer("⚠️ "+str(e)[:400])
+    @dp.message(Command("audio"))
+    async def audio(m):
+        url=(m.text or "").partition(" ")[2].strip()
+        if not url or not platform(url):return await m.answer("الاستخدام: /audio رابط_فيديو_عام")
+        src=dst=None
+        try:
+            _,_=await m.answer("⏳ جاري تنزيل الفيديو وتحويله...")
+            src,title=await grab(url);dst=await convert(src);await m.answer_audio(FSInputFile(dst),caption=title)
+            async with Session() as db:u=await user(db,m.from_user);u.conversions+=1;await db.commit()
+        except Exception as e:await m.answer("❌ فشل التحويل: "+str(e)[:400])
+        finally:
+            for p in (src,dst):
+                if p and os.path.exists(p):
+                    try:os.remove(p)
+                    except OSError:pass
     @dp.message(Command("admin"))
     async def admin(m):
         if m.from_user.id in S.admins:await m.answer("🛠 الإدارة\n/block ID\n/unblock ID\n/broadcast نص")
@@ -71,16 +106,35 @@ async def main():
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split()
         if len(p)!=2 or not p[1].isdigit():return await m.answer("/block ID")
-        async with Session() as db:
-            x=await db.scalar(select(User).where(User.telegram_id==int(p[1])))
-            if x:x.blocked=True;await db.commit()
+        async with Session() as db:x=await db.scalar(select(User).where(User.telegram_id==int(p[1])));x.blocked=True if x else False;await db.commit()
         await m.answer("تم الحظر." if x else "غير موجود.")
+    @dp.message(Command("unblock"))
+    async def unblock(m):
+        if m.from_user.id not in S.admins:return
+        p=(m.text or "").split()
+        if len(p)!=2 or not p[1].isdigit():return await m.answer("/unblock ID")
+        async with Session() as db:x=await db.scalar(select(User).where(User.telegram_id==int(p[1])));x.blocked=False if x else False;await db.commit()
+        await m.answer("تم إلغاء الحظر." if x else "غير موجود.")
+    @dp.message(Command("broadcast"))
+    async def broadcast(m):
+        if m.from_user.id not in S.admins:return
+        text=m.text.partition(" ")[2].strip()
+        if not text:return await m.answer("/broadcast النص")
+        async with Session() as db:users=list((await db.scalars(select(User).where(User.blocked==False))).all())
+        sent=failed=0
+        for u in users:
+            try:await bot.send_message(u.telegram_id,text);sent+=1
+            except Exception:failed+=1
+            await asyncio.sleep(.05)
+        await m.answer(f"📣 تم الإرسال: {sent}\n❌ فشل: {failed}")
     @dp.callback_query(F.data=="stats")
     async def stats_cb(c):await c.answer();await stats(c.message)
     @dp.callback_query(F.data=="help")
-    async def help_cb(c):await c.answer();await c.message.answer("أرسل رابطًا عامًا. لا يوجد تجاوز للخصوصية أو DRM.")
+    async def help_cb(c):await c.answer();await c.message.answer("أرسل رابطًا عامًا. لا يوجد تجاوز للخصوصية أو DRM.\nللبحث: /yt كلمة\nللصوت: /audio رابط")
     @dp.callback_query(F.data=="audio")
-    async def audio_cb(c):await c.answer();await c.message.answer("أرسل رابط فيديو عام وسأحاول تحويله إلى MP3.")
+    async def audio_cb(c):await c.answer();await c.message.answer("استخدم /audio ثم ضع رابط فيديو عام.")
+    @dp.callback_query(F.data=="download")
+    async def download_cb(c):await c.answer();await c.message.answer("أرسل رابط الفيديو العام مباشرة.")
     @dp.message()
     async def media(m):
         if not await allowed(m):return
