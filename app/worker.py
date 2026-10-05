@@ -46,6 +46,10 @@ async def main():
     if not S.bot_token: raise RuntimeError("BOT_TOKEN غير مضبوط")
     redis=Redis.from_url(S.redis_url,decode_responses=True)
     bot=Bot(S.bot_token); last=0
+    while True:
+        pending=await redis.lpop("downloads:processing")
+        if pending is None: break
+        await redis.rpush("downloads",pending)
     try:
         while True:
             if time.time()-last>3600: await cleanup(); last=time.time()
