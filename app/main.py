@@ -27,6 +27,13 @@ class User(Base):
     downloads:Mapped[int]=mapped_column(Integer,default=0);searches:Mapped[int]=mapped_column(Integer,default=0);conversions:Mapped[int]=mapped_column(Integer,default=0);blocked:Mapped[bool]=mapped_column(Boolean,default=False)
 engine=create_async_engine(S.database_url,pool_pre_ping=True);Session=async_sessionmaker(engine,class_=AsyncSession,expire_on_commit=False)
 DOM={"youtube.com":"YouTube","youtu.be":"YouTube","tiktok.com":"TikTok","instagram.com":"Instagram","facebook.com":"Facebook","twitter.com":"X/Twitter","x.com":"X/Twitter","snapchat.com":"Snapchat","likee.video":"Likee"}
+def valid_url(u):
+    try:
+        p=urlparse(u)
+        return p.scheme in {"http","https"} and bool(p.netloc)
+    except ValueError:
+        return False
+
 def platform(u):
     try:h=(urlparse(u).hostname or "").lower().removeprefix("www.")
     except ValueError:return None
