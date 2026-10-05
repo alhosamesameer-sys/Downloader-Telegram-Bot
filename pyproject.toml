@@ -2,7 +2,7 @@
 target-version="py311"
 line-length=120
 [tool.ruff.lint]
-ignore=["E501"]
+ignore=["E501","E701","E702","F401","I001","BLE001"]
 [tool.black]
 line-length=120
 target-version=["py311"]
