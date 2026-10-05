@@ -38,7 +38,26 @@ jobs:
             docker inspect --format='{{.Name}} running={{.State.Running}} status={{.State.Status}}' "$cid"
           done
           docker compose logs --tail=120 bot worker || true
-          python - <<'PY'
+          docker compose exec -T bot python - <<'PY'
+          import asyncio, os
+          import asyncpg
+          from redis.asyncio import Redis
+          async def check():
+              conn = await asyncpg.connect(
+                  host="postgres", port=5432, user="postgres",
+                  password=os.environ.get("POSTGRES_PASSWORD",""),
+                  database="social_downloader", timeout=10,
+              )
+              await conn.fetchval("SELECT 1")
+              await conn.close()
+              redis = Redis.from_url("redis://redis:6379/0")
+              pong = await redis.ping()
+              await redis.aclose()
+              assert pong is True
+              print("Database and Redis connectivity: OK")
+          asyncio.run(check())
+          PY
+          python - <<'PY
           import json, os, urllib.request
           token = os.environ["BOT_TOKEN"]
           req = urllib.request.Request(
