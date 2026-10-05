@@ -23,4 +23,4 @@ jobs:
       - run: docker compose ps
       - run: docker compose run --rm bot alembic upgrade head
       - if: always()
-        run: docker compose down -v
+        run: touch .env && docker compose down -v --remove-orphans
