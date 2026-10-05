@@ -4,7 +4,7 @@ from redis.asyncio import Redis
 from aiogram import Bot
 from aiogram.types import FSInputFile
 from sqlalchemy import select
-from app.main import S,Session,User,grab,convert
+from app.main import S,Session,User,grab,convert,media_kb,store_media_url
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
 log=logging.getLogger("worker")
@@ -25,10 +25,27 @@ async def process(task,bot):
         if os.path.getsize(src)>S.max_file_size: raise RuntimeError("حجم الملف أكبر من الحد المسموح")
         if task["type"]=="audio":
             dst=await convert(src)
-            await bot.send_audio(task["chat_id"],FSInputFile(dst),caption=title[:1000])
+            await bot.send_audio(task["chat_id"],FSInputFile(dst),caption=("🎵 "+title)[:1000])
             field="conversions"
         else:
-            await bot.send_document(task["chat_id"],FSInputFile(src),caption=("✅ "+title)[:1000])
+            token=await store_media_url(task["url"])
+            caption=("✅ "+title)[:1000]
+            try:
+                await bot.send_video(
+                    task["chat_id"],
+                    FSInputFile(src),
+                    caption=caption,
+                    supports_streaming=True,
+                    reply_markup=media_kb(token,task["url"]),
+                )
+            except Exception as video_error:
+                log.warning("send_video failed, falling back to document: %s",video_error)
+                await bot.send_document(
+                    task["chat_id"],
+                    FSInputFile(src),
+                    caption=caption,
+                    reply_markup=media_kb(token,task["url"]),
+                )
             field="downloads"
         async with Session() as db:
             u=await db.scalar(select(User).where(User.telegram_id==task["user_id"]))
