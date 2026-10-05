@@ -67,27 +67,66 @@ async def enqueue(task:dict)->None:
     try: await redis.rpush("downloads",json.dumps(task,ensure_ascii=False))
     finally: await redis.aclose()
 
-def kb():return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 تحميل",callback_data="download"),InlineKeyboardButton(text="👤 حسابي",callback_data="stats")],[InlineKeyboardButton(text="🎵 فيديو→صوت",callback_data="audio"),InlineKeyboardButton(text="ℹ️ المساعدة",callback_data="help")]])
+def user_kb(is_admin=False):
+    rows=[
+        [InlineKeyboardButton(text="📥 تحميل فيديو",callback_data="download"),InlineKeyboardButton(text="🎵 تحويل إلى صوت",callback_data="audio")],
+        [InlineKeyboardButton(text="🔎 بحث YouTube",callback_data="search"),InlineKeyboardButton(text="🏷️ بحث هاشتاغ",callback_data="hashtag")],
+        [InlineKeyboardButton(text="📊 حسابي",callback_data="stats"),InlineKeyboardButton(text="ℹ️ المساعدة",callback_data="help")],
+    ]
+    if is_admin: rows.append([InlineKeyboardButton(text="🛠️ لوحة الإدارة",callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 الإحصائيات",callback_data="admin_stats"),InlineKeyboardButton(text="👥 المستخدمون",callback_data="admin_users")],
+        [InlineKeyboardButton(text="📢 إذاعة رسالة",callback_data="admin_broadcast"),InlineKeyboardButton(text="💬 رسالة خاصة",callback_data="admin_message")],
+        [InlineKeyboardButton(text="🚫 حظر مستخدم",callback_data="admin_block"),InlineKeyboardButton(text="✅ إلغاء الحظر",callback_data="admin_unblock")],
+        [InlineKeyboardButton(text="🏠 لوحة المستخدم",callback_data="user_panel"),InlineKeyboardButton(text="❌ إغلاق",callback_data="admin_close")],
+    ])
+
+def back_admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="↩️ العودة للوحة الإدارة",callback_data="admin_panel")]])
+
+WELCOME="""👋 أهلاً بك في SamirNet
+
+بوت تحميل ومعالجة الوسائط من الروابط العامة بسهولة.
+
+✨ ماذا يمكنك أن تفعل؟
+• 📥 تحميل فيديو من المنصات المدعومة
+• 🎵 تحويل الفيديو إلى ملف صوتي MP3
+• 🔎 البحث عن فيديوهات YouTube
+• 🏷️ البحث بالهاشتاغ
+• 📊 متابعة إحصائيات حسابك
+
+🌐 المنصات المدعومة:
+YouTube • TikTok • Instagram • Facebook • X • Snapchat • Likee
+
+📌 أرسل رابط فيديو عام أو اختر الخدمة من الأزرار بالأسفل.
+
+⚠️ لا يدعم البوت المحتوى الخاص أو تجاوز تسجيل الدخول أو DRM."""
 async def main():
     if not S.bot_token:raise RuntimeError("BOT_TOKEN غير مضبوط")
-    bot=Bot(S.bot_token);dp=Dispatcher();hits={}
+    bot=Bot(S.bot_token);dp=Dispatcher();hits={};pending_admin={}
     async def allowed(m):
         if not m.from_user:return False
         now=time.monotonic();q=hits.setdefault(m.from_user.id,[]);q[:]=[x for x in q if now-x<60]
         if len(q)>=S.rate_limit:return False
         q.append(now);return True
+    async def show_admin(m):
+        await m.answer("🛠️ لوحة الإدارة\n\nاختر العملية التي تريد تنفيذها:",reply_markup=admin_kb())
+
     @dp.message(Command("start"))
     async def start(m):
-        if not await allowed(m):return
+        pending_admin.pop(m.from_user.id,None)
         async with Session() as db:
             u=await user(db,m.from_user)
-            if u.blocked:return
-        await m.answer("أهلًا بك 👋\nأرسل رابطًا عامًا من المنصات المدعومة.",reply_markup=kb())
+            if u.blocked:return await m.answer("🚫 حسابك محظور من استخدام البوت.")
+        await m.answer(WELCOME,reply_markup=user_kb(m.from_user.id in S.admins))
     @dp.message(Command("stats"))
     async def stats(m):
         if not await allowed(m):return
         async with Session() as db:u=await user(db,m.from_user)
-        await m.answer(f"👤 الحساب\n📥 {u.downloads}\n🔎 {u.searches}\n🎵 {u.conversions}")
+        await m.answer(f"👤 حسابي\n\n🆔 {u.telegram_id}\n📥 التنزيلات: {u.downloads}\n🔎 عمليات البحث: {u.searches}\n🎵 التحويلات: {u.conversions}",reply_markup=user_kb(m.from_user.id in S.admins))
     @dp.message(Command("yt"))
     async def yt(m):
         q=(m.text or "").partition(" ")[2].strip()
@@ -149,21 +188,21 @@ async def main():
 
     @dp.message(Command("admin"))
     async def admin(m):
-        if m.from_user.id in S.admins:await m.answer("🛠 الإدارة\n/block ID\n/unblock ID\n/broadcast نص")
+        if m.from_user.id in S.admins:await show_admin(m)
     @dp.message(Command("block"))
     async def block(m):
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split()
         if len(p)!=2 or not p[1].isdigit():return await m.answer("/block ID")
         async with Session() as db:x=await db.scalar(select(User).where(User.telegram_id==int(p[1])));x.blocked=True if x else False;await db.commit()
-        await m.answer("تم الحظر." if x else "غير موجود.")
+        await m.answer("تم الحظر." if x else "غير موجود.",reply_markup=admin_kb())
     @dp.message(Command("unblock"))
     async def unblock(m):
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split()
         if len(p)!=2 or not p[1].isdigit():return await m.answer("/unblock ID")
         async with Session() as db:x=await db.scalar(select(User).where(User.telegram_id==int(p[1])));x.blocked=False if x else False;await db.commit()
-        await m.answer("تم إلغاء الحظر." if x else "غير موجود.")
+        await m.answer("تم إلغاء الحظر." if x else "غير موجود.",reply_markup=admin_kb())
     @dp.message(Command("broadcast"))
     async def broadcast(m):
         if m.from_user.id not in S.admins:return
@@ -175,17 +214,120 @@ async def main():
             try:await bot.send_message(u.telegram_id,text);sent+=1
             except Exception:failed+=1
             await asyncio.sleep(.05)
-        await m.answer(f"📣 تم الإرسال: {sent}\n❌ فشل: {failed}")
+        await m.answer(f"📣 تم الإرسال: {sent}\n❌ فشل: {failed}",reply_markup=admin_kb())
     @dp.callback_query(F.data=="stats")
     async def stats_cb(c):await c.answer();await stats(c.message)
+
     @dp.callback_query(F.data=="help")
-    async def help_cb(c):await c.answer();await c.message.answer("أرسل رابطًا عامًا. لا يوجد تجاوز للخصوصية أو DRM.\nللبحث: /yt كلمة\nللصوت: /audio رابط")
+    async def help_cb(c):
+        await c.answer()
+        await c.message.answer("ℹ️ المساعدة\n\n📥 أرسل رابط فيديو عام لتحميله.\n🎵 استخدم تحويل إلى صوت لإخراج MP3.\n🔎 للبحث: /yt كلمة\n🏷️ للهاشتاغ: /hashtag اسم_الهاشتاغ\n\n⚠️ المحتوى الخاص وتجاوز تسجيل الدخول وDRM غير مدعوم.",reply_markup=user_kb(c.from_user.id in S.admins))
+
     @dp.callback_query(F.data=="audio")
-    async def audio_cb(c):await c.answer();await c.message.answer("استخدم /audio ثم ضع رابط فيديو عام.")
+    async def audio_cb(c):await c.answer();await c.message.answer("🎵 أرسل الآن رابط فيديو عام لتحويله إلى MP3.")
+
     @dp.callback_query(F.data=="download")
-    async def download_cb(c):await c.answer();await c.message.answer("أرسل رابط الفيديو العام مباشرة.")
+    async def download_cb(c):await c.answer();await c.message.answer("📥 أرسل الآن رابط الفيديو العام مباشرة، وسأضيفه إلى قائمة الانتظار.")
+
+    @dp.callback_query(F.data=="search")
+    async def search_cb(c):await c.answer();await c.message.answer("🔎 أرسل أمر البحث بهذا الشكل:\n/yt اسم الفيديو")
+
+    @dp.callback_query(F.data=="hashtag")
+    async def hashtag_cb(c):await c.answer();await c.message.answer("🏷️ أرسل الهاشتاغ بهذا الشكل:\n/hashtag اسم_الهاشتاغ")
+
+    @dp.callback_query(F.data=="admin_panel")
+    async def admin_panel_cb(c):
+        await c.answer()
+        if c.from_user.id in S.admins:await c.message.answer("🛠️ لوحة الإدارة\n\nاختر العملية:",reply_markup=admin_kb())
+
+    @dp.callback_query(F.data=="admin_stats")
+    async def admin_stats_cb(c):
+        await c.answer()
+        if c.from_user.id not in S.admins:return
+        async with Session() as db:
+            total=await db.scalar(select(func.count(User.id))) or 0
+            blocked=await db.scalar(select(func.count(User.id)).where(User.blocked==True)) or 0
+            downloads=await db.scalar(select(func.sum(User.downloads))) or 0
+            searches=await db.scalar(select(func.sum(User.searches))) or 0
+            conversions=await db.scalar(select(func.sum(User.conversions))) or 0
+        await c.message.answer(f"📊 إحصائيات البوت\n\n👥 المستخدمون: {total}\n🚫 المحظورون: {blocked}\n📥 التنزيلات: {downloads}\n🔎 عمليات البحث: {searches}\n🎵 التحويلات: {conversions}",reply_markup=back_admin_kb())
+
+    @dp.callback_query(F.data=="admin_users")
+    async def admin_users_cb(c):
+        await c.answer()
+        if c.from_user.id not in S.admins:return
+        async with Session() as db:users=list((await db.scalars(select(User).order_by(User.id.desc()).limit(20))).all())
+        text="👥 لا يوجد مستخدمون بعد." if not users else "👥 آخر المستخدمين:\n\n"+"\n".join(f"• {u.telegram_id} — {u.first_name or '-'} — 📥 {u.downloads}" for u in users)
+        await c.message.answer(text,reply_markup=back_admin_kb())
+
+    async def admin_prompt(c,action,prompt):
+        if c.from_user.id not in S.admins:return
+        pending_admin[c.from_user.id]=action
+        await c.answer()
+        await c.message.answer(prompt,reply_markup=back_admin_kb())
+
+    @dp.callback_query(F.data=="admin_block")
+    async def admin_block_cb(c):await admin_prompt(c,"block","🚫 أرسل الآن Telegram ID للمستخدم الذي تريد حظره.")
+
+    @dp.callback_query(F.data=="admin_unblock")
+    async def admin_unblock_cb(c):await admin_prompt(c,"unblock","✅ أرسل الآن Telegram ID للمستخدم الذي تريد إلغاء حظره.")
+
+    @dp.callback_query(F.data=="admin_broadcast")
+    async def admin_broadcast_cb(c):await admin_prompt(c,"broadcast","📢 أرسل الآن نص الرسالة التي تريد إرسالها لجميع المستخدمين غير المحظورين.")
+
+    @dp.callback_query(F.data=="admin_message")
+    async def admin_message_cb(c):await admin_prompt(c,"message","💬 أرسل بهذا الشكل:\nID النص\nمثال: 123456789 مرحباً بك.")
+
+    @dp.callback_query(F.data=="user_panel")
+    async def user_panel_cb(c):
+        pending_admin.pop(c.from_user.id,None)
+        await c.answer()
+        await c.message.answer(WELCOME,reply_markup=user_kb(c.from_user.id in S.admins))
+
+    @dp.callback_query(F.data=="admin_close")
+    async def admin_close_cb(c):
+        pending_admin.pop(c.from_user.id,None)
+        await c.answer()
+        await c.message.delete()
+
+    @dp.callback_query(F.data=="admin_cancel")
+    async def admin_cancel_cb(c):
+        pending_admin.pop(c.from_user.id,None)
+        await c.answer()
+        await c.message.answer("تم إلغاء العملية.",reply_markup=admin_kb())
     @dp.message()
     async def media(m):
+        if not m.from_user:return
+        action=pending_admin.get(m.from_user.id)
+        if action and m.from_user.id in S.admins:
+            text=(m.text or "").strip()
+            if action in {"block","unblock"}:
+                if not text.isdigit():return await m.answer("⚠️ أرسل Telegram ID رقميًا فقط.",reply_markup=back_admin_kb())
+                async with Session() as db:
+                    x=await db.scalar(select(User).where(User.telegram_id==int(text)))
+                    if x:
+                        x.blocked=action=="block"
+                        await db.commit()
+                pending_admin.pop(m.from_user.id,None)
+                return await m.answer(("🚫 تم حظر المستخدم." if action=="block" else "✅ تم إلغاء حظر المستخدم.") if x else "⚠️ المستخدم غير موجود.",reply_markup=admin_kb())
+            if action=="message":
+                parts=text.split(maxsplit=1)
+                if len(parts)<2 or not parts[0].isdigit():return await m.answer("⚠️ الصيغة الصحيحة: ID النص",reply_markup=back_admin_kb())
+                try:
+                    await bot.send_message(int(parts[0]),parts[1]);reply="✅ تم إرسال الرسالة بنجاح."
+                except Exception as e:reply="❌ فشل الإرسال: "+str(e)[:300]
+                pending_admin.pop(m.from_user.id,None)
+                return await m.answer(reply,reply_markup=admin_kb())
+            if action=="broadcast":
+                if not text:return await m.answer("⚠️ أرسل نص الرسالة.",reply_markup=back_admin_kb())
+                async with Session() as db:users=list((await db.scalars(select(User).where(User.blocked==False))).all())
+                sent=failed=0
+                for u in users:
+                    try:await bot.send_message(u.telegram_id,text);sent+=1
+                    except Exception:failed+=1
+                    await asyncio.sleep(.05)
+                pending_admin.pop(m.from_user.id,None)
+                return await m.answer(f"📢 تم الإرسال: {sent}\n❌ فشل: {failed}",reply_markup=admin_kb())
         if not await allowed(m):return
         u=(m.text or "").strip();name=platform(u)
         if not name:return
