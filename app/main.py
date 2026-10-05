@@ -346,7 +346,7 @@ async def main():
     async def media_delete_cb(c):
         await c.answer()
         try: await c.message.delete()
-        except Exception as e: logging.debug("message deletion failed: %s",e)
+        except Exception as e: log.debug("message deletion failed: %s",e)
 
     @dp.callback_query(F.data=="admin_panel")
     async def admin_panel_cb(c):
