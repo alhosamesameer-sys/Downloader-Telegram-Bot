@@ -10,6 +10,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m compileall -q app tests
       - run: ruff check .
+      - run: black .
       - run: black --check .
       - run: mypy app
       - run: pytest -q
