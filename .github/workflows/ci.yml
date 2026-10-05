@@ -16,4 +16,5 @@ jobs:
       - run: black --check .
       - run: mypy app
       - run: pytest -q
+      - run: cp .env.example .env
       - run: docker compose config
