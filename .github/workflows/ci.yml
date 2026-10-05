@@ -18,3 +18,9 @@ jobs:
       - run: pytest -q
       - run: cp .env.example .env
       - run: docker compose config
+      - run: docker compose build
+      - run: docker compose up -d postgres redis
+      - run: docker compose ps
+      - run: docker compose run --rm bot alembic upgrade head
+      - if: always()
+        run: docker compose down -v
