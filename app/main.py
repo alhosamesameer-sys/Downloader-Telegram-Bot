@@ -45,8 +45,30 @@ async def user(db,u):
 async def grab(url):
     Path(S.temp_dir).mkdir(parents=True,exist_ok=True)
     def run():
-        with yt_dlp.YoutubeDL({"quiet":True,"noplaylist":True,"outtmpl":f"{S.temp_dir}/%(id)s.%(ext)s","max_filesize":S.max_file_size}) as y:
-            i=y.extract_info(url,download=True);return y.prepare_filename(i),str(i.get("title") or "وسائط")
+        opts={
+            "quiet":True,
+            "noplaylist":True,
+            "outtmpl":f"{S.temp_dir}/%(id)s.%(ext)s",
+            "max_filesize":S.max_file_size,
+            "format":"bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+            "merge_output_format":"mp4",
+            "retries":2,
+            "fragment_retries":2,
+            "socket_timeout":20,
+        }
+        with yt_dlp.YoutubeDL(opts) as y:
+            i=y.extract_info(url,download=True)
+            video_id=str(i.get("id") or "")
+            candidates=[
+                p for p in Path(S.temp_dir).glob(f"{video_id}.*")
+                if p.is_file() and not p.name.endswith((".part",".ytdl"))
+            ]
+            if not candidates:
+                prepared=Path(y.prepare_filename(i))
+                if prepared.exists(): candidates=[prepared]
+            if not candidates: raise FileNotFoundError("تعذر العثور على الملف بعد اكتمال التحميل.")
+            src=max(candidates,key=lambda p:p.stat().st_size)
+            return str(src),str(i.get("title") or "وسائط")
     return await asyncio.wait_for(asyncio.to_thread(run),S.download_timeout)
 async def convert(src):
     dst=str(Path(S.temp_dir)/(Path(src).stem+".mp3"))
