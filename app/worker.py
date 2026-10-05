@@ -49,10 +49,14 @@ async def main():
     try:
         while True:
             if time.time()-last>3600: await cleanup(); last=time.time()
-            item=await redis.blpop("downloads",timeout=10)
-            if item:
-                try: await process(json.loads(item[1]),bot)
-                except Exception: log.exception("worker loop error")
+            raw=await redis.brpoplpush("downloads","downloads:processing",timeout=10)
+            if raw:
+                try:
+                    await process(json.loads(raw),bot)
+                except Exception:
+                    log.exception("worker loop error")
+                finally:
+                    await redis.lrem("downloads:processing",1,raw)
     finally:
         await bot.session.close(); await redis.aclose()
 
