@@ -244,7 +244,10 @@ async def main():
 
     @dp.message(Command("admin"))
     async def admin(m):
-        if m.from_user.id in S.admins:await show_admin(m)
+        if m.from_user.id in S.admins:
+            pending_user.pop(m.from_user.id,None)
+            pending_admin.pop(m.from_user.id,None)
+            await show_admin(m)
     @dp.message(Command("block"))
     async def block(m):
         if m.from_user.id not in S.admins:return
@@ -272,7 +275,15 @@ async def main():
             await asyncio.sleep(.05)
         await m.answer(f"📣 تم الإرسال: {sent}\n❌ فشل: {failed}",reply_markup=admin_kb())
     @dp.callback_query(F.data=="stats")
-    async def stats_cb(c):await c.answer();await stats(c.message)
+    async def stats_cb(c):
+        await c.answer()
+        async with Session() as db:
+            u=await user(db,c.from_user)
+            if u.blocked:return await c.message.answer("🚫 حسابك محظور من استخدام البوت.")
+        await c.message.answer(
+            f"👤 حسابي\n\n🆔 {u.telegram_id}\n📥 التنزيلات: {u.downloads}\n🔎 عمليات البحث: {u.searches}\n🎵 التحويلات: {u.conversions}",
+            reply_markup=user_kb(c.from_user.id in S.admins),
+        )
 
     @dp.callback_query(F.data=="help")
     async def help_cb(c):
@@ -330,7 +341,9 @@ async def main():
     @dp.callback_query(F.data=="admin_panel")
     async def admin_panel_cb(c):
         await c.answer()
-        if c.from_user.id in S.admins:await c.message.answer("🛠️ لوحة الإدارة\n\nاختر العملية:",reply_markup=admin_kb())
+        if c.from_user.id in S.admins:
+            pending_user.pop(c.from_user.id,None)
+            await c.message.answer("🛠️ لوحة الإدارة\n\nاختر العملية:",reply_markup=admin_kb())
 
     @dp.callback_query(F.data=="admin_stats")
     async def admin_stats_cb(c):
@@ -354,6 +367,7 @@ async def main():
 
     async def admin_prompt(c,action,prompt):
         if c.from_user.id not in S.admins:return
+        pending_user.pop(c.from_user.id,None)
         pending_admin[c.from_user.id]=action
         await c.answer()
         await c.message.answer(prompt,reply_markup=back_admin_kb())
@@ -384,7 +398,7 @@ async def main():
 
     @dp.callback_query(F.data=="admin_close")
     async def admin_close_cb(c):
-        pending_admin.pop(c.from_user.id,None)
+        pending_admin.pop(c.from_user.id,None);pending_user.pop(c.from_user.id,None)
         await c.answer()
         await c.message.delete()
 
