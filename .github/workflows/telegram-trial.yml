@@ -1,0 +1,42 @@
+name: Telegram Bot Trial
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How many minutes to keep the bot running"
+        required: false
+        default: "10"
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+      POSTGRES_PASSWORD: trial-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate secrets
+        run: |
+          test -n "$BOT_TOKEN"
+          test -n "$ADMIN_IDS"
+      - name: Create environment
+        run: |
+          cp .env.example .env
+          sed -i "s/^BOT_TOKEN=.*/BOT_TOKEN=$BOT_TOKEN/" .env
+          sed -i "s/^ADMIN_IDS=.*/ADMIN_IDS=$ADMIN_IDS/" .env
+      - name: Start services
+        run: |
+          docker compose up -d postgres redis
+          docker compose run --rm bot alembic upgrade head
+          docker compose up -d bot worker
+          docker compose ps
+      - name: Keep bot online for trial
+        run: |
+          sleep $((${{ inputs.minutes }} * 60))
+      - name: Show logs
+        if: always()
+        run: |
+          docker compose logs --tail=200 bot worker || true
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
