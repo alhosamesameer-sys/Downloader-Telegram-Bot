@@ -30,13 +30,36 @@ jobs:
           docker compose run --rm bot alembic upgrade head
           docker compose up -d bot worker
           docker compose ps
+      - name: Verify bot process and Telegram token
+        run: |
+          docker compose ps
+          docker compose ps -q bot worker | while read cid; do
+            test -n "$cid"
+            docker inspect --format='{{.Name}} running={{.State.Running}} status={{.State.Status}}' "$cid"
+          done
+          docker compose logs --tail=120 bot worker || true
+          python - <<'PY'
+          import json, os, urllib.request
+          token = os.environ["BOT_TOKEN"]
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/getMe",
+              headers={"User-Agent": "telegram-trial/1.0"},
+          )
+          with urllib.request.urlopen(req, timeout=15) as response:
+              data = json.load(response)
+          if not data.get("ok"):
+              raise SystemExit("Telegram getMe failed")
+          result = data.get("result", {})
+          print("Telegram token valid; bot username:", result.get("username"))
+          PY
       - name: Keep bot online for trial
         run: |
           sleep $((${{ inputs.minutes }} * 60))
       - name: Show logs
         if: always()
         run: |
-          docker compose logs --tail=200 bot worker || true
+          docker compose ps || true
+          docker compose logs --tail=300 bot worker || true
       - name: Stop services
         if: always()
         run: docker compose down -v
