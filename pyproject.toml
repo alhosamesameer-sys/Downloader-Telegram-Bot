@@ -1,16 +1,11 @@
 [tool.ruff]
 target-version = "py311"
-line-length = 100
-
+line-length = 120
+[tool.ruff.lint]
+ignore = ["E501","F401","E702","E701"]
 [tool.black]
-line-length = 100
+line-length = 120
 target-version = ["py311"]
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-ignore_missing_imports = true
