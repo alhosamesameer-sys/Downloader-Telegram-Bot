@@ -180,11 +180,13 @@ async def main():
         await m.answer(WELCOME,reply_markup=user_kb(m.from_user.id in S.admins))
     @dp.message(Command("stats"))
     async def stats(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if not await allowed(m):return
         async with Session() as db:u=await user(db,m.from_user)
         await m.answer(f"👤 حسابي\n\n🆔 {u.telegram_id}\n📥 التنزيلات: {u.downloads}\n🔎 عمليات البحث: {u.searches}\n🎵 التحويلات: {u.conversions}",reply_markup=user_kb(m.from_user.id in S.admins))
     @dp.message(Command("yt"))
     async def yt(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         q=(m.text or "").partition(" ")[2].strip()
         if not q:return await m.answer("الاستخدام: /yt اسم الفيديو")
         try:
@@ -194,6 +196,7 @@ async def main():
         except Exception as e:await m.answer("⚠️ "+str(e)[:400])
     @dp.message(Command("audio"))
     async def audio(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         url=(m.text or "").partition(" ")[2].strip()
         if not url or not platform(url):return await m.answer("الاستخدام: /audio رابط_فيديو_عام")
         src=dst=None
@@ -208,6 +211,7 @@ async def main():
                     except OSError:pass
     @dp.message(Command("hashtag"))
     async def hashtag(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         raw=(m.text or "").partition(" ")[2].strip().lstrip("#").split()[0] if (m.text or "").partition(" ")[2].strip() else ""
         if not raw or len(raw)>80 or not raw.replace("_","").isalnum(): return await m.answer("الاستخدام: /hashtag اسم_الهاشتاغ")
         try:
@@ -218,6 +222,7 @@ async def main():
 
     @dp.message(Command("users"))
     async def users(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if m.from_user.id not in S.admins:return
         async with Session() as db:
             total=await db.scalar(select(func.count(User.id))) or 0
@@ -227,6 +232,7 @@ async def main():
 
     @dp.message(Command("user"))
     async def user_info(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split()
         if len(p)!=2 or not p[1].isdigit():return await m.answer("/user ID")
@@ -236,6 +242,7 @@ async def main():
 
     @dp.message(Command("message"))
     async def private_message(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split(maxsplit=2)
         if len(p)<3 or not p[1].isdigit():return await m.answer("/message ID النص")
@@ -250,6 +257,7 @@ async def main():
             await show_admin(m)
     @dp.message(Command("block"))
     async def block(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split()
         if len(p)!=2 or not p[1].isdigit():return await m.answer("/block ID")
@@ -257,6 +265,7 @@ async def main():
         await m.answer("تم الحظر." if x else "غير موجود.",reply_markup=admin_kb())
     @dp.message(Command("unblock"))
     async def unblock(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if m.from_user.id not in S.admins:return
         p=(m.text or "").split()
         if len(p)!=2 or not p[1].isdigit():return await m.answer("/unblock ID")
@@ -264,6 +273,7 @@ async def main():
         await m.answer("تم إلغاء الحظر." if x else "غير موجود.",reply_markup=admin_kb())
     @dp.message(Command("broadcast"))
     async def broadcast(m):
+        pending_admin.pop(m.from_user.id,None);pending_user.pop(m.from_user.id,None)
         if m.from_user.id not in S.admins:return
         text=m.text.partition(" ")[2].strip()
         if not text:return await m.answer("/broadcast النص")
